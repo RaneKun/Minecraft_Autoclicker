@@ -1,0 +1,4 @@
+# run with - "pip install -r requirements.txt"
+# Requires Python 3.10 or higher
+PyQt6>=6.4.0
+pynput>=1.7.6
