@@ -2,7 +2,7 @@
 <img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-blue?style=for-the-badge"> <img src="https://img.shields.io/badge/Language-Python%203.12-yellow?style=for-the-badge"> <img src="https://img.shields.io/badge/GUI-PyQt6-green?style=for-the-badge"> <img src="https://img.shields.io/badge/Input-SendInput%20(Hardware%20Level)-brightgreen?style=for-the-badge"> <img src="https://img.shields.io/badge/License-RaneKun%20Open--Use-orange?style=for-the-badge"> </p>
 </p><p align="left"> <strong>A powerful, hardware-level autoclicker designed specifically for Minecraft — with separate left/right intervals, spam/hold modes, system tray support, and audio feedback.</strong> </p><p align="left">
 
-<img width="380" height="542" alt="image" src="https://github.com/user-attachments/assets/b8c9c35b-61d2-4e59-b400-c17d12980243" />
+<img width="380" height="515" alt="image" src="https://github.com/user-attachments/assets/c2851f1c-2c2d-4235-a8a0-acff3584ab83" />
 
 # About the app
 
@@ -16,7 +16,6 @@
 - **Separate Intervals** — Different speeds for left and right clicks (1-10000ms)
 - **Configurable Hotkey** — Choose from common function keys (F1-F12, Insert, Delete, etc.)
 - **Persistent Config** — All settings saved to `%LOCALAPPDATA%`
-- **Start with Windows** — Optional auto-launch on system boot
 
 ### 🔊 Audio & Visual Feedback
 - **Start/Stop Sounds** — WAV audio cues for toggle events
