@@ -2,7 +2,7 @@
 # Minecraft Autoclicker by Rane
 # A simple autoclicker utility for Minecraft with configurable hotkeys,
 # separate left/right click intervals, spam click and hold modes,
-# system tray support, start-with-Windows option, and audio feedback.
+# system tray support, and audio feedback.
 #
 # Click engine uses Win32 SendInput() via ctypes so events are injected at
 # the hardware-driver level. This is required for Minecraft gameplay because
@@ -19,7 +19,6 @@ import sys          # Application control flow and exit
 import time         # Sleep intervals for click timing
 import configparser # INI config file read/write
 import os           # File and path operations
-import winreg       # Windows registry access for startup entry
 import winsound     # WAV audio playback (Windows built-in, no extra deps)
 import ctypes       # Win32 API access for SendInput()
 import ctypes.wintypes as wintypes  # Win32 type aliases (DWORD, LONG, etc.)
@@ -136,11 +135,6 @@ ICON_PATH:   str = os.path.join(_SCRIPT_DIR, "click.ico")
 SOUND_START: str = os.path.join(_SCRIPT_DIR, "start.wav")
 SOUND_STOP:  str = os.path.join(_SCRIPT_DIR, "stop.wav")
 
-# Windows registry key used for the "start with Windows" feature.
-# HKCU requires no admin rights.
-REGISTRY_RUN_KEY:  str = r"Software\Microsoft\Windows\CurrentVersion\Run"
-REGISTRY_APP_NAME: str = "MinecraftAutoclicker"
-
 # Default config values
 DEFAULT_HOTKEY:             str  = "f8"
 DEFAULT_LEFT_INTERVAL:      int  = 100    # milliseconds
@@ -148,7 +142,6 @@ DEFAULT_RIGHT_INTERVAL:     int  = 100    # milliseconds
 DEFAULT_MOUSE_BUTTON:       str  = "left"
 DEFAULT_CLICK_MODE:         str  = "spam"
 DEFAULT_MINIMIZE_TO_TRAY:   bool = False
-DEFAULT_START_WITH_WINDOWS: bool = False
 
 # UI sizing
 WINDOW_MIN_WIDTH:  int = 440
@@ -197,7 +190,7 @@ class ConfigManager:
     so the config is user-scoped and independent of the script's location.
 
     Persists: hotkey, left/right intervals, selected mouse button,
-    selected click mode, minimize-to-tray, and start-with-Windows.
+    selected click mode, and minimize-to-tray.
     """
 
     def __init__(self, config_path: str) -> None:
@@ -227,8 +220,7 @@ class ConfigManager:
                 "click_mode":   DEFAULT_CLICK_MODE,
             }
             self.config["Options"] = {
-                "minimize_to_tray":   str(DEFAULT_MINIMIZE_TO_TRAY),
-                "start_with_windows": str(DEFAULT_START_WITH_WINDOWS),
+                "minimize_to_tray": str(DEFAULT_MINIMIZE_TO_TRAY),
             }
             with open(self.config_path, "w") as config_file:
                 self.config.write(config_file)
@@ -260,10 +252,6 @@ class ConfigManager:
         """Return whether the app should minimize to tray instead of taskbar."""
         return self.config.getboolean("Options", "minimize_to_tray", fallback=DEFAULT_MINIMIZE_TO_TRAY)
 
-    def get_start_with_windows(self) -> bool:
-        """Return whether the app is registered to start with Windows."""
-        return self.config.getboolean("Options", "start_with_windows", fallback=DEFAULT_START_WITH_WINDOWS)
-
     # --- Unified save ---
 
     def save(
@@ -274,7 +262,6 @@ class ConfigManager:
         mouse_button:       str,
         click_mode:         str,
         minimize_to_tray:   bool,
-        start_with_windows: bool,
     ) -> None:
         """
         Persist all settings to the INI file in one atomic write.
@@ -286,7 +273,6 @@ class ConfigManager:
             mouse_button:       Selected button ('left' or 'right').
             click_mode:         Selected mode ('spam' or 'hold').
             minimize_to_tray:   Whether to minimize to system tray.
-            start_with_windows: Whether to launch on Windows startup.
         """
         self.config["Hotkey"] = {
             "toggle_key": hotkey,
@@ -300,16 +286,14 @@ class ConfigManager:
             "click_mode":   click_mode,
         }
         self.config["Options"] = {
-            "minimize_to_tray":   str(minimize_to_tray),
-            "start_with_windows": str(start_with_windows),
+            "minimize_to_tray": str(minimize_to_tray),
         }
         with open(self.config_path, "w") as config_file:
             self.config.write(config_file)
         print(
             f"[CONFIG] Saved — hotkey={hotkey}, left={left_interval}ms, "
             f"right={right_interval}ms, button={mouse_button}, "
-            f"mode={click_mode}, tray={minimize_to_tray}, "
-            f"startup={start_with_windows}"
+            f"mode={click_mode}, tray={minimize_to_tray}"
         )
 
 
@@ -501,8 +485,7 @@ class MinecraftAutoclickerApp(QMainWindow):
     Main application window for the Minecraft Autoclicker.
 
     Manages the UI controls, ClickWorker and HotkeyListener threads,
-    system tray integration, start-with-Windows registry entry,
-    and WAV audio feedback on toggle events.
+    system tray integration, and WAV audio feedback on toggle events.
     """
 
     def __init__(self) -> None:
@@ -694,8 +677,7 @@ class MinecraftAutoclickerApp(QMainWindow):
 
     def _build_options_group(self, parent_layout: QVBoxLayout) -> None:
         """
-        Build the options group with minimize-to-tray and
-        start-with-Windows checkboxes.
+        Build the options group with minimize-to-tray checkbox.
 
         Args:
             parent_layout: Layout to attach this group to.
@@ -707,12 +689,7 @@ class MinecraftAutoclickerApp(QMainWindow):
         self._chk_tray.setChecked(self._config.get_minimize_to_tray())
         self._chk_tray.stateChanged.connect(self._on_setting_changed)
 
-        self._chk_startup = QCheckBox("Start with Windows")
-        self._chk_startup.setChecked(self._config.get_start_with_windows())
-        self._chk_startup.stateChanged.connect(self._on_startup_changed)
-
         layout.addWidget(self._chk_tray)
-        layout.addWidget(self._chk_startup)
         parent_layout.addWidget(group)
 
     def _build_status_bar(self, parent_layout: QVBoxLayout) -> None:
@@ -861,44 +838,6 @@ class MinecraftAutoclickerApp(QMainWindow):
         print(f"[HOTKEY] Listener started for: {hotkey}")
 
     # ------------------------------------------------------------------
-    # Windows Registry — Start With Windows
-    # ------------------------------------------------------------------
-
-    def _register_startup(self, enable: bool) -> None:
-        """
-        Add or remove the app from the Windows startup registry key.
-
-        Writes to HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run
-        which requires no admin rights. Uses pythonw.exe so no console
-        window appears on startup.
-
-        Args:
-            enable: True to register for startup, False to remove.
-        """
-        try:
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                REGISTRY_RUN_KEY,
-                0,
-                winreg.KEY_SET_VALUE,
-            )
-            if enable:
-                script_path = os.path.abspath(__file__)
-                pythonw     = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-                reg_value   = f'"{pythonw}" "{script_path}"'
-                winreg.SetValueEx(key, REGISTRY_APP_NAME, 0, winreg.REG_SZ, reg_value)
-                print(f"[STARTUP] Registered startup entry: {reg_value}")
-            else:
-                try:
-                    winreg.DeleteValue(key, REGISTRY_APP_NAME)
-                    print("[STARTUP] Registry entry removed")
-                except FileNotFoundError:
-                    print("[STARTUP] No registry entry found — nothing to remove")
-            winreg.CloseKey(key)
-        except Exception as reg_error:
-            print(f"[STARTUP] Registry operation failed: {reg_error}")
-
-    # ------------------------------------------------------------------
     # Slot Handlers
     # ------------------------------------------------------------------
 
@@ -964,7 +903,6 @@ class MinecraftAutoclickerApp(QMainWindow):
             mouse_button       = BTN_LEFT if self._radio_left.isChecked() else BTN_RIGHT,
             click_mode         = MODE_SPAM if self._radio_spam.isChecked() else MODE_HOLD,
             minimize_to_tray   = self._chk_tray.isChecked(),
-            start_with_windows = self._chk_startup.isChecked(),
         )
 
     def _on_hotkey_changed(self, new_key: str) -> None:
@@ -977,12 +915,6 @@ class MinecraftAutoclickerApp(QMainWindow):
         print(f"[APP] Hotkey changed to: {new_key}")
         self._on_setting_changed()
         self._start_hotkey_listener()
-
-    def _on_startup_changed(self) -> None:
-        """Update the Windows registry and save config when the startup checkbox changes."""
-        enabled = self._chk_startup.isChecked()
-        self._register_startup(enabled)
-        self._on_setting_changed()
 
     # ------------------------------------------------------------------
     # Helper Methods
