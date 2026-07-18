@@ -2,7 +2,7 @@
 <img src="https://img.shields.io/badge/Platform-Windows%2010%2F11-blue?style=for-the-badge"> <img src="https://img.shields.io/badge/Language-Python%203.12-yellow?style=for-the-badge"> <img src="https://img.shields.io/badge/GUI-PyQt6-green?style=for-the-badge"> <img src="https://img.shields.io/badge/Input-SendInput%20(Hardware%20Level)-brightgreen?style=for-the-badge"> <img src="https://img.shields.io/badge/License-RaneKun%20Open--Use-orange?style=for-the-badge"> </p>
 </p><p align="left"> <strong>A powerful, hardware-level autoclicker designed specifically for Minecraft — with separate left/right intervals, spam/hold modes, system tray support, and audio feedback.</strong> </p><p align="left">
 
-<img width="380" height="515" alt="image" src="https://github.com/user-attachments/assets/c2851f1c-2c2d-4235-a8a0-acff3584ab83" />
+<img width="402" height="530" alt="image" src="https://github.com/user-attachments/assets/3ac3de56-9a67-4a8c-b1ff-474764499dd5" />
 
 # About the app
 
