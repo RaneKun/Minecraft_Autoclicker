@@ -154,6 +154,7 @@ MODE_HOLD: str = "hold"
 # Button identifiers
 BTN_LEFT:  str = "left"
 BTN_RIGHT: str = "right"
+BTN_BOTH:  str = "both"          # <--- NEW
 
 # Single instance mutex name
 MUTEX_NAME: str = "MinecraftAutoclicker_Rane_SingleInstance"
@@ -241,7 +242,7 @@ class ConfigManager:
         return self.config.getint("Intervals", "right_interval_ms", fallback=DEFAULT_RIGHT_INTERVAL)
 
     def get_mouse_button(self) -> str:
-        """Return the last selected mouse button ('left' or 'right')."""
+        """Return the last selected mouse button ('left', 'right', or 'both')."""
         return self.config.get("Selection", "mouse_button", fallback=DEFAULT_MOUSE_BUTTON)
 
     def get_click_mode(self) -> str:
@@ -270,7 +271,7 @@ class ConfigManager:
             hotkey:             Hotkey string (e.g. 'f8').
             left_interval:      Left-click interval in milliseconds.
             right_interval:     Right-click interval in milliseconds.
-            mouse_button:       Selected button ('left' or 'right').
+            mouse_button:       Selected button ('left', 'right', or 'both').
             click_mode:         Selected mode ('spam' or 'hold').
             minimize_to_tray:   Whether to minimize to system tray.
         """
@@ -313,8 +314,13 @@ class ClickWorker(QThread):
     injects at the hardware-abstraction (KMDF) level, which feeds the raw
     input path, making clicks visible to Minecraft in all contexts.
 
-    In SPAM mode: fires BUTTONDOWN + BUTTONUP pairs at the configured interval.
-    In HOLD mode: sends BUTTONDOWN on start, BUTTONUP on stop.
+    In SPAM mode:
+      - For 'left' or 'right': fires BUTTONDOWN + BUTTONUP pairs at the
+        configured interval for that button.
+      - For 'both': fires left clicks at the left interval and right clicks
+        at the right interval, independently and interleaved.
+    In HOLD mode: sends BUTTONDOWN on start, BUTTONUP on stop (both buttons
+    together for 'both').
 
     Signals:
         status_signal: Emits a human-readable status string for the UI label.
@@ -322,31 +328,36 @@ class ClickWorker(QThread):
 
     status_signal = pyqtSignal(str)
 
-    def __init__(self, button: str, mode: str, interval_ms: int) -> None:
+    def __init__(self, button: str, mode: str, left_interval_ms: int, right_interval_ms: int = None) -> None:
         """
         Initialise the click worker.
 
         Args:
-            button:      Which mouse button to use ('left' or 'right').
-            mode:        Click mode ('spam' or 'hold').
-            interval_ms: Delay between clicks in milliseconds (spam only).
+            button:           Which mouse button to use ('left', 'right', or 'both').
+            mode:             Click mode ('spam' or 'hold').
+            left_interval_ms: Left-click interval in milliseconds.
+            right_interval_ms: Right-click interval in milliseconds (only used for 'both').
         """
         super().__init__()
         self.button      = button
         self.mode        = mode
-        self.interval_ms = interval_ms
+        self.left_ms     = left_interval_ms
+        self.right_ms    = right_interval_ms if right_interval_ms is not None else left_interval_ms
         self._running    = False
 
-        # Resolve the correct SendInput flag pair for this button once at
-        # construction time so the hot loop stays as lightweight as possible.
+        # Resolve the SendInput flag(s) for this button.
         if button == BTN_LEFT:
-            self._flag_down = MOUSEEVENTF_LEFTDOWN
-            self._flag_up   = MOUSEEVENTF_LEFTUP
-        else:
-            self._flag_down = MOUSEEVENTF_RIGHTDOWN
-            self._flag_up   = MOUSEEVENTF_RIGHTUP
+            self._flags_down = [MOUSEEVENTF_LEFTDOWN]
+            self._flags_up   = [MOUSEEVENTF_LEFTUP]
+        elif button == BTN_RIGHT:
+            self._flags_down = [MOUSEEVENTF_RIGHTDOWN]
+            self._flags_up   = [MOUSEEVENTF_RIGHTUP]
+        else:  # both
+            self._flags_down = [MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_RIGHTDOWN]
+            self._flags_up   = [MOUSEEVENTF_LEFTUP,   MOUSEEVENTF_RIGHTUP]
 
-        print(f"[WORKER] Initialised — button={button}, mode={mode}, interval={interval_ms}ms")
+        print(f"[WORKER] Initialised — button={button}, mode={mode}, "
+              f"left={self.left_ms}ms, right={self.right_ms}ms")
 
     def run(self) -> None:
         """Execute the click loop on the worker thread."""
@@ -363,29 +374,77 @@ class ClickWorker(QThread):
 
     def _run_spam(self) -> None:
         """
-        Spam-click by sending BUTTONDOWN + BUTTONUP pairs via SendInput().
+        Spam-click loop.
 
-        Each pair is a complete discrete click event injected into the
-        hardware input stream at the configured interval.
+        For single buttons: sends BUTTONDOWN + BUTTONUP pairs at that button's interval.
+        For 'both': uses two independent timers – left clicks at left_ms,
+        right clicks at right_ms – interleaved in the same loop.
         """
-        interval_sec = self.interval_ms / 1000.0
+        if self.button == BTN_BOTH:
+            self._run_spam_both()
+        else:
+            self._run_spam_single()
+
+    def _run_spam_single(self) -> None:
+        """Spam a single mouse button at its own interval."""
+        interval_sec = self.left_ms / 1000.0  # (left_ms is the only one used for single buttons)
         hold_sec = 0.025
         while self._running:
-            _send_mouse_input(self._flag_down)
+            for flag in self._flags_down:
+                _send_mouse_input(flag)
             time.sleep(hold_sec)
-            _send_mouse_input(self._flag_up)
+            for flag in self._flags_up:
+                _send_mouse_input(flag)
             time.sleep(interval_sec)
+
+    def _run_spam_both(self) -> None:
+        """
+        Spam both buttons independently using two timers.
+
+        Left clicks fire every left_ms, right clicks every right_ms.
+        They are interleaved according to whichever timer expires first.
+        """
+        left_sec = self.left_ms / 1000.0
+        right_sec = self.right_ms / 1000.0
+
+        # Time of the last click for each button (start at 0 so both fire immediately)
+        last_left = 0.0
+        last_right = 0.0
+
+        while self._running:
+            now = time.monotonic()
+            left_due = (now - last_left) >= left_sec
+            right_due = (now - last_right) >= right_sec
+
+            if left_due:
+                _send_mouse_input(MOUSEEVENTF_LEFTDOWN)
+                time.sleep(0.025)
+                _send_mouse_input(MOUSEEVENTF_LEFTUP)
+                last_left = now
+
+            if right_due:
+                _send_mouse_input(MOUSEEVENTF_RIGHTDOWN)
+                time.sleep(0.025)
+                _send_mouse_input(MOUSEEVENTF_RIGHTUP)
+                last_right = now
+
+            # If nothing was due, sleep a tiny bit to avoid busy-wait
+            if not left_due and not right_due:
+                time.sleep(0.001)
 
     def _run_hold(self) -> None:
         """
-        Hold the mouse button by sending BUTTONDOWN and idling until stopped,
+        Hold the mouse button(s) by sending BUTTONDOWN and idling until stopped,
         then sending BUTTONUP to release.
+        For 'both', we send both DOWN flags together.
         """
-        _send_mouse_input(self._flag_down)
+        for flag in self._flags_down:
+            _send_mouse_input(flag)
         while self._running:
             time.sleep(0.05)  # Low-CPU idle — thread stays alive until stop()
-        _send_mouse_input(self._flag_up)
-        print(f"[WORKER] Released held button: {self.button}")
+        for flag in self._flags_up:
+            _send_mouse_input(flag)
+        print(f"[WORKER] Released held button(s): {self.button}")
 
     def stop(self) -> None:
         """Signal the click loop to exit on its next iteration."""
@@ -536,7 +595,7 @@ class MinecraftAutoclickerApp(QMainWindow):
         self._build_options_group(root_layout)
         self._build_status_bar(root_layout)
         self._build_toggle_button(root_layout)
-        self._build_force_quit_note(root_layout)   # <-- new note
+        self._build_force_quit_note(root_layout)
 
         self.setMinimumWidth(WINDOW_MIN_WIDTH)
         self.setFixedSize(self.sizeHint())
@@ -546,7 +605,7 @@ class MinecraftAutoclickerApp(QMainWindow):
 
     def _build_button_group(self, parent_layout: QVBoxLayout) -> None:
         """
-        Build the mouse button selection group (Left / Right).
+        Build the mouse button selection group (Left / Right / Both).
 
         Restores the last saved selection from config on startup.
 
@@ -558,24 +617,30 @@ class MinecraftAutoclickerApp(QMainWindow):
 
         self._radio_left  = QRadioButton("Left Click")
         self._radio_right = QRadioButton("Right Click")
+        self._radio_both  = QRadioButton("Both")          # <--- NEW
 
         # Restore saved selection; default to left if config value is unrecognised
         saved_button = self._config.get_mouse_button()
         if saved_button == BTN_RIGHT:
             self._radio_right.setChecked(True)
+        elif saved_button == BTN_BOTH:
+            self._radio_both.setChecked(True)
         else:
             self._radio_left.setChecked(True)
 
         self._button_group = QButtonGroup()
         self._button_group.addButton(self._radio_left,  0)
         self._button_group.addButton(self._radio_right, 1)
+        self._button_group.addButton(self._radio_both,  2)   # <--- NEW
 
         # Save whenever the selection changes
         self._radio_left.toggled.connect(self._on_setting_changed)
         self._radio_right.toggled.connect(self._on_setting_changed)
+        self._radio_both.toggled.connect(self._on_setting_changed)   # <--- NEW
 
         layout.addWidget(self._radio_left)
         layout.addWidget(self._radio_right)
+        layout.addWidget(self._radio_both)   # <--- NEW
         parent_layout.addWidget(group)
 
     def _build_mode_group(self, parent_layout: QVBoxLayout) -> None:
@@ -850,19 +915,34 @@ class MinecraftAutoclickerApp(QMainWindow):
 
     def _start_clicking(self) -> None:
         """Read current UI settings, play start sound, and launch ClickWorker."""
-        button      = BTN_LEFT if self._radio_left.isChecked() else BTN_RIGHT
-        mode        = MODE_SPAM if self._radio_spam.isChecked() else MODE_HOLD
-        interval_ms = (
-            self._spin_left.value()
-            if button == BTN_LEFT
-            else self._spin_right.value()
-        )
+        # Determine selected button
+        if self._radio_left.isChecked():
+            button = BTN_LEFT
+        elif self._radio_right.isChecked():
+            button = BTN_RIGHT
+        else:
+            button = BTN_BOTH   # <--- NEW
 
-        print(f"[APP] Starting — button={button}, mode={mode}, interval={interval_ms}ms")
+        mode = MODE_SPAM if self._radio_spam.isChecked() else MODE_HOLD
+
+        # Pass the appropriate interval(s) to the worker
+        if button == BTN_BOTH:
+            worker = ClickWorker(button, mode,
+                                 self._spin_left.value(),
+                                 self._spin_right.value())
+        elif button == BTN_LEFT:
+            worker = ClickWorker(button, mode,
+                                 self._spin_left.value(), None)
+        else:  # right
+            worker = ClickWorker(button, mode,
+                                 self._spin_right.value(), None)
+
+        print(f"[APP] Starting — button={button}, mode={mode}, "
+              f"left={self._spin_left.value()}ms, right={self._spin_right.value()}ms")
 
         self._play_sound(SOUND_START)
 
-        self._worker = ClickWorker(button, mode, interval_ms)
+        self._worker = worker
         self._worker.status_signal.connect(self._status_label.setText)
         self._worker.start()
 
@@ -896,11 +976,19 @@ class MinecraftAutoclickerApp(QMainWindow):
 
     def _on_setting_changed(self) -> None:
         """Persist all current settings whenever any control value changes."""
+        # Determine selected button
+        if self._radio_left.isChecked():
+            btn = BTN_LEFT
+        elif self._radio_right.isChecked():
+            btn = BTN_RIGHT
+        else:
+            btn = BTN_BOTH   # <--- NEW
+
         self._config.save(
             hotkey             = self._hotkey_combo.currentText(),
             left_interval      = self._spin_left.value(),
             right_interval     = self._spin_right.value(),
-            mouse_button       = BTN_LEFT if self._radio_left.isChecked() else BTN_RIGHT,
+            mouse_button       = btn,
             click_mode         = MODE_SPAM if self._radio_spam.isChecked() else MODE_HOLD,
             minimize_to_tray   = self._chk_tray.isChecked(),
         )
@@ -931,6 +1019,7 @@ class MinecraftAutoclickerApp(QMainWindow):
         """
         self._radio_left.setEnabled(enabled)
         self._radio_right.setEnabled(enabled)
+        self._radio_both.setEnabled(enabled)   # <--- NEW
         self._radio_spam.setEnabled(enabled)
         self._radio_hold.setEnabled(enabled)
         self._spin_left.setEnabled(enabled)
