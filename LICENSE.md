@@ -2,7 +2,7 @@
 
 **Copyright © RaneKun**
 
-This license governs the use, modification, and distribution of the **Windows Cache Cleaner** project and all files included with it.
+This license governs the use, modification, and distribution of the **Minecraft_Autoclicker** project and all files included with it.
 
 ---
 
